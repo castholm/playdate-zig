@@ -1,0 +1,6 @@
+name=Test Cartridge
+author=castholm
+description=Test Cartridge
+bundleID=com.castholm.testcartridge
+buildNumber=0
+imagePath=

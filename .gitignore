@@ -1,0 +1,5 @@
+.sentry-native/
+zig-cache/
+zig-out/
+
+CODE_OF_CONDUCT.md
