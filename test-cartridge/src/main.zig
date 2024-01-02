@@ -4,6 +4,7 @@ const c = playdate.c;
 const main = @This();
 const system = @import("system.zig");
 const crash = @import("crash.zig");
+const video = @import("video.zig");
 
 pub const panic = playdate.panic;
 
@@ -19,6 +20,7 @@ pub const State = enum {
     main,
     system,
     crash,
+    video,
 
     var current: State = .main;
 
@@ -35,6 +37,7 @@ pub const State = enum {
             .main => main.handleEvent(event),
             .system => system.handleEvent(event),
             .crash => crash.handleEvent(event),
+            .video => video.handleEvent(event),
         }
     }
 
@@ -45,16 +48,16 @@ pub const State = enum {
     }
 };
 
-var font_title: *c.LCDFont = undefined;
-var font_option_title: *c.LCDFont = undefined;
-var font_option_description: *c.LCDFont = undefined;
+var title_font: *c.LCDFont = undefined;
+var option_title_font: *c.LCDFont = undefined;
+var option_desc_font: *c.LCDFont = undefined;
 
 fn handleEvent(event: playdate.SystemEvent) void {
     switch (event) {
         .init => {
-            font_title = c.pd.graphics.loadFont("/System/Fonts/Asheville-Sans-24-Light", null) orelse unreachable;
-            font_option_title = c.pd.graphics.loadFont("/System/Fonts/Asheville-Sans-14-Bold", null) orelse unreachable;
-            font_option_description = c.pd.graphics.loadFont("/System/Fonts/Asheville-Sans-14-Light", null) orelse unreachable;
+            title_font = c.pd.graphics.loadFont("/System/Fonts/Asheville-Sans-24-Light", null) orelse unreachable;
+            option_title_font = c.pd.graphics.loadFont("/System/Fonts/Asheville-Sans-14-Bold", null) orelse unreachable;
+            option_desc_font = c.pd.graphics.loadFont("/System/Fonts/Asheville-Sans-14-Light", null) orelse unreachable;
 
             c.pd.system.setMenuImage(null, c.LCD_COLUMNS / 4);
 
@@ -66,9 +69,9 @@ fn handleEvent(event: playdate.SystemEvent) void {
             c.pd.system.setMenuImage(null, 0);
 
             c.pd.graphics.setFont(null);
-            _ = c.pd.system.realloc(font_option_description, 0);
-            _ = c.pd.system.realloc(font_option_title, 0);
-            _ = c.pd.system.realloc(font_title, 0);
+            _ = c.pd.system.realloc(option_desc_font, 0);
+            _ = c.pd.system.realloc(option_title_font, 0);
+            _ = c.pd.system.realloc(title_font, 0);
         },
         else => {},
     }
@@ -77,46 +80,49 @@ fn handleEvent(event: playdate.SystemEvent) void {
 const MainMenuOption = struct {
     state: State,
     title: [:0]const u8,
-    description: [:0]const u8,
+    desc: [:0]const u8,
 };
 
 const options = [_]MainMenuOption{
     .{
         .state = .system,
         .title = "System",
-        .description = "Test misc. 'system' functions",
+        .desc = "Test misc. 'system' functions",
     },
     .{
         .state = .crash,
         .title = "Panic",
-        .description = "Panic with an error return trace",
+        .desc = "Panic with an error return trace",
+    },
+    .{
+        .state = .video,
+        .title = "Video",
+        .desc = "Test the video player",
     },
 };
-var selected_index: isize = 0;
+var option_index: usize = 0;
 
 fn update(_: ?*anyopaque) callconv(.C) c_int {
-    var pressed: c.PDButtons = undefined;
-    c.pd.system.getButtonState(null, &pressed, null);
+    var pressed_btns: c.PDButtons = undefined;
+    c.pd.system.getButtonState(null, &pressed_btns, null);
 
-    if (pressed & (c.kButtonUp | c.kButtonLeft) != 0) {
-        selected_index -= 1;
-    }
-    if (pressed & (c.kButtonDown | c.kButtonRight) != 0) {
-        selected_index += 1;
-    }
-    selected_index = @mod(selected_index, options.len);
-
-    const selected_option = options[@intCast(selected_index)];
-    if (pressed & c.kButtonA != 0) {
-        State.transition(selected_option.state);
+    if (pressed_btns & c.kButtonA != 0) {
+        State.transition(options[option_index].state);
         return 1;
+    }
+
+    if (pressed_btns & (c.kButtonUp | c.kButtonLeft) != 0) {
+        option_index = if (option_index == 0) options.len - 1 else option_index - 1;
+    }
+    if (pressed_btns & (c.kButtonDown | c.kButtonRight) != 0) {
+        option_index = if (option_index == options.len - 1) 0 else option_index + 1;
     }
 
     c.pd.graphics.clear(c.kColorWhite);
 
-    drawTextCentered(font_title, "Test Cartridge", c.LCD_COLUMNS / 2, c.LCD_ROWS / 4);
-    drawTextCentered(font_option_title, selected_option.title, c.LCD_COLUMNS / 2, c.LCD_ROWS / 8 * 5);
-    drawTextCentered(font_option_description, selected_option.description, c.LCD_COLUMNS / 2, c.LCD_ROWS / 4 * 3);
+    drawTextCentered(title_font, "Test Cartridge", c.LCD_COLUMNS / 2, c.LCD_ROWS / 4);
+    drawTextCentered(option_title_font, options[option_index].title, c.LCD_COLUMNS / 2, c.LCD_ROWS / 8 * 5);
+    drawTextCentered(option_desc_font, options[option_index].desc, c.LCD_COLUMNS / 2, c.LCD_ROWS / 4 * 3);
 
     return 1;
 }

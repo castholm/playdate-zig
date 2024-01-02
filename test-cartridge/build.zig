@@ -25,9 +25,11 @@ pub fn build(b: *std.Build) void {
     }
 
     pdx.addAsset(.{ .path = "assets/pdxinfo" }, "pdxinfo");
-    pdx.addAsset(.{ .path = "assets/menuImage.png" }, "menuImage.png");
     pdx.addAsset(.{ .path = "assets/Roobert-11-Mono-Condensed.fnt" }, "Roobert-11-Mono-Condensed.fnt");
     pdx.addAsset(.{ .path = "assets/Roobert-11-Mono-Condensed-table-8-16.png" }, "Roobert-11-Mono-Condensed-table-8-16.png");
+    pdx.addAsset(.{ .path = "assets/menuImage.png" }, "menuImage.png");
+    pdx.addAsset(.{ .path = "assets/steamboat.pdv" }, "steamboat.pdv");
+    pdx.addAsset(.{ .path = "assets/steamboat.wav" }, "steamboat.wav");
 
     const installed_pdx = playdate.addInstallBundle(b, pdx, .prefix, "TestCartridge.pdx");
     b.getInstallStep().dependOn(installed_pdx.step);

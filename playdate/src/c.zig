@@ -254,12 +254,12 @@ pub const LCDVideoPlayer = opaque {};
 pub const playdate_video = extern struct {
     loadVideo: *const fn (path: [*:0]const u8) callconv(.C) ?*LCDVideoPlayer,
     freePlayer: *const fn (p: *LCDVideoPlayer) callconv(.C) void,
-    setContext: *const fn (p: *LCDVideoPlayer, context: ?*LCDBitmap) callconv(.C) c_int,
+    setContext: *const fn (p: *LCDVideoPlayer, context: *LCDBitmap) callconv(.C) c_int,
     useScreenContext: *const fn (p: *LCDVideoPlayer) callconv(.C) void,
     renderFrame: *const fn (p: *LCDVideoPlayer, n: c_int) callconv(.C) c_int,
     getError: *const fn (p: *LCDVideoPlayer) callconv(.C) ?[*:0]const u8,
     getInfo: *const fn (p: *LCDVideoPlayer, outWidth: ?*c_int, outHeight: ?*c_int, outFrameRate: ?*f32, outFrameCount: ?*c_int, outCurrentFrame: ?*c_int) callconv(.C) void,
-    getContext: *const fn (p: *LCDVideoPlayer) callconv(.C) ?*LCDBitmap,
+    getContext: *const fn (p: *LCDVideoPlayer) callconv(.C) *LCDBitmap,
 };
 
 pub const playdate_graphics = extern struct {

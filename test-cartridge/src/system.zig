@@ -9,7 +9,7 @@ var menu_image: *c.LCDBitmap = undefined;
 
 var date_time_format_menu_item: *c.PDMenuItem = undefined;
 var reset_timer_menu_item: *c.PDMenuItem = undefined;
-var accelerometer_enabled_menu_item: *c.PDMenuItem = undefined;
+var accelerometer_menu_item: *c.PDMenuItem = undefined;
 
 const date_time_formats = [_][*:0]const u8{
     "epoch",
@@ -17,7 +17,8 @@ const date_time_formats = [_][*:0]const u8{
     "rfc3339",
 };
 
-var exit_time: c_uint = 0;
+/// The last moment in time when B+A were NOT down.
+var alive_timestamp: c_uint = undefined;
 
 pub fn handleEvent(event: playdate.SystemEvent) void {
     switch (event) {
@@ -39,7 +40,7 @@ pub fn handleEvent(event: playdate.SystemEvent) void {
                 handleResetTimeMenuItem,
                 null,
             ) orelse unreachable;
-            accelerometer_enabled_menu_item = c.pd.system.addCheckmarkMenuItem(
+            accelerometer_menu_item = c.pd.system.addCheckmarkMenuItem(
                 "accmtr",
                 0,
                 handleAccelerometerMenuItem,
@@ -47,12 +48,11 @@ pub fn handleEvent(event: playdate.SystemEvent) void {
             ) orelse unreachable;
 
             if (c.pd.system.addMenuItem("four", null, null)) |menu_item_4| {
-                defer c.pd.system.removeMenuItem(menu_item_4);
-
+                c.pd.system.removeMenuItem(menu_item_4);
                 c.pd.system.logToConsole("a fourth menu item was added");
             }
 
-            exit_time = c.pd.system.getCurrentTimeMilliseconds();
+            alive_timestamp = c.pd.system.getCurrentTimeMilliseconds();
 
             _ = c.pd.system.setCrankSoundsDisabled(1);
             c.pd.system.setAutoLockDisabled(1);
@@ -89,15 +89,15 @@ fn handleResetTimeMenuItem(_: ?*anyopaque) callconv(.C) void {
 
 fn handleAccelerometerMenuItem(_: ?*anyopaque) callconv(.C) void {
     c.pd.system.logToConsole("in handleAccelerometerMenuItem");
-    const enabled = c.pd.system.getMenuItemValue(accelerometer_enabled_menu_item);
+    const enabled = c.pd.system.getMenuItemValue(accelerometer_menu_item);
     c.pd.system.setPeripheralsEnabled(if (enabled != 0) c.kAccelerometer else c.kNone);
 }
 
 fn update(_: ?*anyopaque) callconv(.C) c_int {
-    var btn_current: c.PDButtons = 0;
-    var btn_pressed: c.PDButtons = 0;
-    var btn_released: c.PDButtons = 0;
-    c.pd.system.getButtonState(&btn_current, &btn_pressed, &btn_released);
+    var current_btns: c.PDButtons = 0;
+    var pressed_btns: c.PDButtons = 0;
+    var released_btns: c.PDButtons = 0;
+    c.pd.system.getButtonState(&current_btns, &pressed_btns, &released_btns);
 
     c.pd.graphics.clear(c.kColorWhite);
     c.pd.graphics.setFont(font);
@@ -122,24 +122,24 @@ fn update(_: ?*anyopaque) callconv(.C) c_int {
 
     {
         var ms: c_uint = undefined;
-        const s_utc: c_uint = c.pd.system.getSecondsSinceEpoch(&ms);
-        var dt_utc: c.PDDateTime = undefined;
-        c.pd.system.convertEpochToDateTime(s_utc, &dt_utc);
+        const utc_s: c_uint = c.pd.system.getSecondsSinceEpoch(&ms);
+        var utc_dt: c.PDDateTime = undefined;
+        c.pd.system.convertEpochToDateTime(utc_s, &utc_dt);
 
         const offset: c_int = c.pd.system.getTimezoneOffset();
-        const offset_h: c_int = @divTrunc(offset, 60 * 60);
-        const offset_m: c_uint = @abs(@rem(@divTrunc(offset, 60), 60));
-        const s_local: c_uint = @bitCast(@as(c_int, @bitCast(s_utc)) + offset);
-        var dt_local: c.PDDateTime = undefined;
-        c.pd.system.convertEpochToDateTime(s_local, &dt_local);
+        const h_offset: c_int = @divTrunc(offset, 60 * 60);
+        const m_offset: c_uint = @abs(@rem(@divTrunc(offset, 60), 60));
+        const local_s: c_uint = @bitCast(@as(c_int, @bitCast(utc_s)) + offset);
+        var local_dt: c.PDDateTime = undefined;
+        c.pd.system.convertEpochToDateTime(local_s, &local_dt);
 
         var str: [*:0]u8 = undefined;
         _ = switch (c.pd.system.getMenuItemValue(date_time_format_menu_item)) {
-            0 => c.pd.system.formatString(&str, "Real time: %u.%03u", s_utc, ms),
+            0 => c.pd.system.formatString(&str, "Real time: %u.%03u", utc_s, ms),
             1 => c.pd.system.formatString(
                 &str,
                 "Real time: %s, %02u %s %04u %02u:%02u:%02u GMT",
-                switch (dt_utc.weekday) {
+                switch (utc_dt.weekday) {
                     1 => "Mon",
                     2 => "Tue",
                     3 => "Wed",
@@ -148,8 +148,8 @@ fn update(_: ?*anyopaque) callconv(.C) c_int {
                     6 => "Sat",
                     else => "Sun",
                 }.ptr,
-                @as(c_uint, dt_utc.day),
-                switch (dt_utc.month) {
+                @as(c_uint, utc_dt.day),
+                switch (utc_dt.month) {
                     1 => "Jan",
                     2 => "Feb",
                     3 => "Mar",
@@ -163,23 +163,23 @@ fn update(_: ?*anyopaque) callconv(.C) c_int {
                     11 => "Nov",
                     else => "Dec",
                 }.ptr,
-                @as(c_uint, dt_utc.year),
-                @as(c_uint, dt_utc.hour),
-                @as(c_uint, dt_utc.minute),
-                @as(c_uint, dt_utc.second),
+                @as(c_uint, utc_dt.year),
+                @as(c_uint, utc_dt.hour),
+                @as(c_uint, utc_dt.minute),
+                @as(c_uint, utc_dt.second),
             ),
             else => c.pd.system.formatString(
                 &str,
                 "Real time: %04u-%02u-%02uT%02u:%02u:%02u.%03u%+03d:%02u",
-                @as(c_uint, dt_local.year),
-                @as(c_uint, dt_local.month),
-                @as(c_uint, dt_local.day),
-                @as(c_uint, dt_local.hour),
-                @as(c_uint, dt_local.minute),
-                @as(c_uint, dt_local.second),
+                @as(c_uint, local_dt.year),
+                @as(c_uint, local_dt.month),
+                @as(c_uint, local_dt.day),
+                @as(c_uint, local_dt.hour),
+                @as(c_uint, local_dt.minute),
+                @as(c_uint, local_dt.second),
                 ms,
-                offset_h,
-                offset_m,
+                h_offset,
+                m_offset,
             ),
         };
         defer _ = c.pd.system.realloc(str, 0);
@@ -187,21 +187,21 @@ fn update(_: ?*anyopaque) callconv(.C) c_int {
         _ = c.pd.graphics.drawText(str, std.mem.len(str), c.kUTF8Encoding, x, y);
         y += font_height;
 
-        const dt_utc_copy = dt_utc;
-        const s_utc_roundtrip = c.pd.system.convertDateTimeToEpoch(&dt_utc);
+        const utc_dt_copy = utc_dt;
+        const utc_s_roundtrip = c.pd.system.convertDateTimeToEpoch(&utc_dt);
 
-        if (s_utc_roundtrip != s_utc) {
-            c.pd.system.logToConsole("real time 's_utc' did not roundtrip");
+        if (utc_s_roundtrip != utc_s) {
+            c.pd.system.logToConsole("utc_s did not roundtrip");
         }
-        if (dt_utc_copy.year != dt_utc.year or
-            dt_utc_copy.month != dt_utc.month or
-            dt_utc_copy.day != dt_utc.day or
-            dt_utc_copy.weekday != dt_utc.weekday or
-            dt_utc_copy.hour != dt_utc.hour or
-            dt_utc_copy.minute != dt_utc.minute or
-            dt_utc_copy.second != dt_utc.second)
+        if (utc_dt_copy.year != utc_dt.year or
+            utc_dt_copy.month != utc_dt.month or
+            utc_dt_copy.day != utc_dt.day or
+            utc_dt_copy.weekday != utc_dt.weekday or
+            utc_dt_copy.hour != utc_dt.hour or
+            utc_dt_copy.minute != utc_dt.minute or
+            utc_dt_copy.second != utc_dt.second)
         {
-            c.pd.system.logToConsole("real time 'dt_utc' was mutated");
+            c.pd.system.logToConsole("utc_dt was mutated");
         }
     }
 
@@ -221,24 +221,24 @@ fn update(_: ?*anyopaque) callconv(.C) c_int {
         _ = c.pd.system.formatString(
             &str,
             "Buttons: %d%d%d%d%d%d %d%d%d%d%d%d %d%d%d%d%d%d",
-            @as(c_int, @intFromBool(btn_current & c.kButtonA != 0)),
-            @as(c_int, @intFromBool(btn_current & c.kButtonB != 0)),
-            @as(c_int, @intFromBool(btn_current & c.kButtonDown != 0)),
-            @as(c_int, @intFromBool(btn_current & c.kButtonUp != 0)),
-            @as(c_int, @intFromBool(btn_current & c.kButtonRight != 0)),
-            @as(c_int, @intFromBool(btn_current & c.kButtonLeft != 0)),
-            @as(c_int, @intFromBool(btn_pressed & c.kButtonA != 0)),
-            @as(c_int, @intFromBool(btn_pressed & c.kButtonB != 0)),
-            @as(c_int, @intFromBool(btn_pressed & c.kButtonDown != 0)),
-            @as(c_int, @intFromBool(btn_pressed & c.kButtonUp != 0)),
-            @as(c_int, @intFromBool(btn_pressed & c.kButtonRight != 0)),
-            @as(c_int, @intFromBool(btn_pressed & c.kButtonLeft != 0)),
-            @as(c_int, @intFromBool(btn_released & c.kButtonA != 0)),
-            @as(c_int, @intFromBool(btn_released & c.kButtonB != 0)),
-            @as(c_int, @intFromBool(btn_released & c.kButtonDown != 0)),
-            @as(c_int, @intFromBool(btn_released & c.kButtonUp != 0)),
-            @as(c_int, @intFromBool(btn_released & c.kButtonRight != 0)),
-            @as(c_int, @intFromBool(btn_released & c.kButtonLeft != 0)),
+            @as(c_int, @intFromBool(current_btns & c.kButtonA != 0)),
+            @as(c_int, @intFromBool(current_btns & c.kButtonB != 0)),
+            @as(c_int, @intFromBool(current_btns & c.kButtonDown != 0)),
+            @as(c_int, @intFromBool(current_btns & c.kButtonUp != 0)),
+            @as(c_int, @intFromBool(current_btns & c.kButtonRight != 0)),
+            @as(c_int, @intFromBool(current_btns & c.kButtonLeft != 0)),
+            @as(c_int, @intFromBool(pressed_btns & c.kButtonA != 0)),
+            @as(c_int, @intFromBool(pressed_btns & c.kButtonB != 0)),
+            @as(c_int, @intFromBool(pressed_btns & c.kButtonDown != 0)),
+            @as(c_int, @intFromBool(pressed_btns & c.kButtonUp != 0)),
+            @as(c_int, @intFromBool(pressed_btns & c.kButtonRight != 0)),
+            @as(c_int, @intFromBool(pressed_btns & c.kButtonLeft != 0)),
+            @as(c_int, @intFromBool(released_btns & c.kButtonA != 0)),
+            @as(c_int, @intFromBool(released_btns & c.kButtonB != 0)),
+            @as(c_int, @intFromBool(released_btns & c.kButtonDown != 0)),
+            @as(c_int, @intFromBool(released_btns & c.kButtonUp != 0)),
+            @as(c_int, @intFromBool(released_btns & c.kButtonRight != 0)),
+            @as(c_int, @intFromBool(released_btns & c.kButtonLeft != 0)),
         );
         defer _ = c.pd.system.realloc(str, 0);
 
@@ -286,11 +286,11 @@ fn update(_: ?*anyopaque) callconv(.C) c_int {
     }
 
     {
-        const voltage: f32 = c.pd.system.getBatteryVoltage();
+        const volts: f32 = c.pd.system.getBatteryVoltage();
         const soc: f32 = c.pd.system.getBatteryPercentage();
 
         var str: [*:0]u8 = undefined;
-        _ = c.pd.system.formatString(&str, "Battery: %.3f V, %.3f%% ", voltage, soc);
+        _ = c.pd.system.formatString(&str, "Battery: %.3f V, %.3f%% ", volts, soc);
         defer _ = c.pd.system.realloc(str, 0);
 
         _ = c.pd.graphics.drawText(str, std.mem.len(str), c.kUTF8Encoding, x, y);
@@ -313,10 +313,10 @@ fn update(_: ?*anyopaque) callconv(.C) c_int {
     }
 
     {
-        const display_24_hour_time: c_int = c.pd.system.shouldDisplay24HourTime();
+        const sane_time: c_int = c.pd.system.shouldDisplay24HourTime(); // :^)
 
         var str: [*:0]u8 = undefined;
-        _ = c.pd.system.formatString(&str, "24-Hour Time: %d", display_24_hour_time);
+        _ = c.pd.system.formatString(&str, "24-Hour Time: %d", sane_time);
         defer _ = c.pd.system.realloc(str, 0);
 
         _ = c.pd.graphics.drawText(str, std.mem.len(str), c.kUTF8Encoding, x, y);
@@ -347,20 +347,20 @@ fn update(_: ?*anyopaque) callconv(.C) c_int {
 
     y += font_height;
 
-    const exit_instructions = "Hold B+A for 3 seconds to exit.";
+    const exit_instructions = "Hold B+A for 3 seconds to exit";
     _ = c.pd.graphics.drawText(exit_instructions.ptr, exit_instructions.len, c.kUTF8Encoding, x, y);
     y += font_height;
 
     c.pd.system.drawFPS(c.LCD_COLUMNS - 15 - 3, 3);
 
     const now = c.pd.system.getCurrentTimeMilliseconds();
-    if (btn_current & (c.kButtonB | c.kButtonA) == c.kButtonB | c.kButtonA) {
-        if (now - exit_time >= 3000) {
+    if (current_btns & (c.kButtonB | c.kButtonA) == c.kButtonB | c.kButtonA) {
+        if (now - alive_timestamp >= 3000) {
             main.State.transition(.main);
             return 1;
         }
     } else {
-        exit_time = now;
+        alive_timestamp = now;
     }
 
     return 1;
