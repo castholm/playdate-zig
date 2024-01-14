@@ -19,4 +19,4 @@
 
 ---
 
-Playdate is a registered trademark of Panic. This project does not claim to be affiliated with Panic in any way.
+<small>Playdate is a registered trademark of Panic. This project is not affiliated with Panic.</small>
