@@ -153,6 +153,7 @@ pub const CompileExecutablePseudoStep = struct {
                 });
                 elf.setLinkerScript(dep.path("device.ld"));
                 elf.entry = .{ .symbol_name = "eventHandler" };
+                elf.image_base = 0;
                 elf.root_module.strip = false;
                 elf.root_module.pic = true;
                 elf.link_function_sections = true;
