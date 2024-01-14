@@ -32,10 +32,11 @@ pub fn build(b: *std.Build) void {
     pdx.addAsset(.{ .path = "assets/steamboat.wav" }, "steamboat.wav");
 
     const installed_pdx = playdate.addInstallBundle(b, pdx, .prefix, "TestCartridge.pdx");
-    b.getInstallStep().dependOn(installed_pdx.step);
+    b.getInstallStep().dependOn(&installed_pdx.installation.step);
 
     const run_simulator = playdate.addRunSimulator(b, installed_pdx);
+    run_simulator.command.step.dependOn(b.getInstallStep());
 
     const run_step = b.step("run", "Run the game in the Playdate Simulator");
-    run_step.dependOn(run_simulator.step);
+    run_step.dependOn(&run_simulator.command.step);
 }

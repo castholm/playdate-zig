@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    _ = b.addModule("playdate", .{ .source_file = .{ .path = "src/playdate.zig" } });
+    _ = b.addModule("playdate", .{ .root_source_file = .{ .path = "src/playdate.zig" } });
 }
 
 pub const StandardExecutableTargetOptionsDefaults = struct {
@@ -34,37 +34,12 @@ pub fn addCompileBundle(
     b: *std.Build,
     options: CompileBundlePseudoStep.Options,
 ) *CompileBundlePseudoStep {
-    const pdc_command = b.addSystemCommand(&.{sdkToolName(b, "pdc")});
-    for (options.lib_paths) |lib_path| {
-        pdc_command.addArg("-I");
-        pdc_command.addDirectoryArg(lib_path);
-    }
-    if (options.strip) {
-        pdc_command.addArg("-s");
-    }
-    if (!options.compress) {
-        pdc_command.addArg("-u");
-    }
-    pdc_command.addArg("-q");
-    const sources = b.addWriteFiles();
-    pdc_command.addDirectoryArg(sources.getDirectory());
-    const generated_dir = pdc_command.addOutputFileArg("Bundle.pdx");
-
-    const pdx = b.allocator.create(CompileBundlePseudoStep) catch @panic("OOM");
-    pdx.* = .{
-        .step = generated_dir.generated.step,
-        .pdc_command = pdc_command,
-        .sources = sources,
-        .generated_dir = generated_dir,
-    };
-    return pdx;
+    return CompileBundlePseudoStep.create(b, options);
 }
 
 pub const CompileBundlePseudoStep = struct {
-    step: *std.Build.Step,
-    pdc_command: *std.Build.Step.Run,
-    sources: *std.Build.Step.WriteFile,
-    generated_dir: std.Build.LazyPath,
+    pdex_steps: Steps,
+    asset_steps: Steps,
 
     pub const Options = struct {
         /// `-I, -libpath <path>`
@@ -75,11 +50,51 @@ pub const CompileBundlePseudoStep = struct {
         compress: bool = true,
     };
 
+    pub const Steps = struct {
+        command: *std.Build.Step.Run,
+        sources: *std.Build.Step.WriteFile,
+        generated_dir: std.Build.LazyPath,
+
+        pub fn create(b: *std.Build, options: Options, temp_name: []const u8) Steps {
+            const command = b.addSystemCommand(&.{sdkToolName(b, "pdc")});
+            for (options.lib_paths) |lib_path| {
+                command.addArg("-I");
+                command.addDirectoryArg(lib_path);
+            }
+            if (options.strip) command.addArg("-s");
+            if (!options.compress) command.addArg("-u");
+            command.addArg("-q");
+            const sources = b.addWriteFiles();
+            command.addDirectoryArg(sources.getDirectory());
+            const generated_dir = command.addOutputFileArg(temp_name);
+            return .{ .command = command, .sources = sources, .generated_dir = generated_dir };
+        }
+    };
+
+    pub fn create(b: *std.Build, options: Options) *CompileBundlePseudoStep {
+        // Executables and assets are split up into two different compilations for cache reasons.
+        // The rationale is that code is recompiled much more frequently than assets, so by doing
+        // this we prevent a lot of unnecessary caching of assets.
+        const pdex_steps = Steps.create(b, options, "Executables.pdx");
+        const asset_steps = Steps.create(b, options, "Assets.pdx");
+
+        // pdc requires an entry point, but we only want to compile assets; add a dummy pdex.bin
+        // file to shut it up, then exclude it when installing.
+        _ = asset_steps.sources.add("pdex.bin", "");
+
+        const pdx = b.allocator.create(CompileBundlePseudoStep) catch @panic("OOM");
+        pdx.* = .{ .pdex_steps = pdex_steps, .asset_steps = asset_steps };
+        return pdx;
+    }
+
     pub fn addExecutable(
         pdx: *CompileBundlePseudoStep,
         pdex: *CompileExecutablePseudoStep,
     ) void {
-        _ = pdx.sources.addCopyFile(pdex.artifact.getEmittedBin(), pdex.artifact.out_filename);
+        _ = pdx.pdex_steps.sources.addCopyFile(
+            pdex.artifact.getEmittedBin(),
+            pdex.artifact.out_filename,
+        );
     }
 
     pub fn addAsset(
@@ -87,12 +102,17 @@ pub const CompileBundlePseudoStep = struct {
         source: std.Build.LazyPath,
         dest_rel_path: []const u8,
     ) void {
-        _ = pdx.sources.addCopyFile(source, dest_rel_path);
+        // pdc appends a build timestamp to the pdxinfo file, so we compile it together with the
+        // executable instead of other assets to make it less likely to get stale.
+        const sources = if (std.mem.eql(u8, dest_rel_path, "pdxinfo"))
+            pdx.pdex_steps.sources
+        else
+            pdx.asset_steps.sources;
 
-        // <https://github.com/ziglang/zig/issues/18281>
-        //if (std.ascii.endsWithIgnoreCase(dest_rel_path, ".lua")) {
-        //    pdx.pdc_command.has_side_effects = true;
-        //}
+        _ = sources.addCopyFile(
+            source,
+            dest_rel_path,
+        );
     }
 };
 
@@ -100,48 +120,10 @@ pub fn addCompileExecutable(
     b: *std.Build,
     options: CompileExecutablePseudoStep.Options,
 ) *CompileExecutablePseudoStep {
-    const dep = thisDep(b);
-    const artifact = switch (options.target) {
-        .device => device: {
-            const elf = b.addExecutable(.{
-                .name = "pdex.elf",
-                .root_source_file = options.root_source_file,
-                .target = device_cross_target,
-                .optimize = options.optimize,
-            });
-            elf.setLinkerScript(.{ .dependency = .{ .dependency = dep, .sub_path = "device.ld" } });
-            elf.entry = .{ .symbol_name = "eventHandler" };
-            elf.force_pic = true;
-            elf.formatted_panics = false;
-            elf.link_function_sections = true;
-            elf.link_data_sections = true;
-            elf.link_emit_relocs = true;
-            elf.link_gc_sections = true;
-            elf.strip = false;
-            break :device elf;
-        },
-        .simulator => simulator: {
-            const so = b.addSharedLibrary(.{
-                .name = "pdex",
-                .root_source_file = options.root_source_file,
-                .target = simulator_cross_target,
-                .optimize = options.optimize,
-            });
-            break :simulator so;
-        },
-    };
-    artifact.addModule("playdate", dep.module("playdate"));
-
-    const pdex = b.allocator.create(CompileExecutablePseudoStep) catch @panic("OOM");
-    pdex.* = .{
-        .step = &artifact.step,
-        .artifact = artifact,
-    };
-    return pdex;
+    return CompileExecutablePseudoStep.create(b, options);
 }
 
 pub const CompileExecutablePseudoStep = struct {
-    step: *std.Build.Step,
     artifact: *std.Build.Step.Compile,
 
     pub const Target = enum { device, simulator };
@@ -150,7 +132,52 @@ pub const CompileExecutablePseudoStep = struct {
         root_source_file: std.Build.LazyPath,
         target: Target,
         optimize: std.builtin.OptimizeMode,
+        import_name: []const u8 = "playdate",
     };
+
+    pub fn create(b: *std.Build, options: Options) *CompileExecutablePseudoStep {
+        const dep = thisDep(b);
+        const artifact = switch (options.target) {
+            .device => device: {
+                const elf = b.addExecutable(.{
+                    .name = "pdex.elf",
+                    .root_source_file = options.root_source_file,
+                    .target = b.resolveTargetQuery(.{
+                        .cpu_arch = .thumb,
+                        .os_tag = .freestanding,
+                        .abi = .eabihf,
+                        .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_m7 },
+                        .cpu_features_add = std.Target.arm.featureSet(&.{.fp_armv8d16sp}),
+                    }),
+                    .optimize = options.optimize,
+                });
+                elf.setLinkerScript(dep.path("device.ld"));
+                elf.entry = .{ .symbol_name = "eventHandler" };
+                elf.root_module.strip = false;
+                elf.root_module.pic = true;
+                elf.link_function_sections = true;
+                elf.link_data_sections = true;
+                elf.link_emit_relocs = true;
+                elf.link_gc_sections = true;
+                elf.formatted_panics = false;
+                break :device elf;
+            },
+            .simulator => simulator: {
+                const so = b.addSharedLibrary(.{
+                    .name = "pdex",
+                    .root_source_file = options.root_source_file,
+                    .target = b.resolveTargetQuery(.{}),
+                    .optimize = options.optimize,
+                });
+                break :simulator so;
+            },
+        };
+        artifact.root_module.addImport(options.import_name, dep.module("playdate"));
+
+        const pdex = b.allocator.create(CompileExecutablePseudoStep) catch @panic("OOM");
+        pdex.* = .{ .artifact = artifact };
+        return pdex;
+    }
 };
 
 pub fn addInstallBundle(
@@ -159,62 +186,60 @@ pub fn addInstallBundle(
     install_dir: std.Build.InstallDir,
     dest_rel_path: []const u8,
 ) *InstallBundlePseudoStep {
-    const dir = b.addInstallDirectory(.{
-        .source_dir = pdx.generated_dir,
-        .install_dir = install_dir,
-        .install_subdir = dest_rel_path,
-    });
-
-    const installed_pdx = b.allocator.create(InstallBundlePseudoStep) catch @panic("OOM");
-    installed_pdx.* = .{
-        .step = &dir.step,
-        .dir = dir,
-    };
-    return installed_pdx;
+    return InstallBundlePseudoStep.create(b, pdx, install_dir, dest_rel_path);
 }
 
 pub const InstallBundlePseudoStep = struct {
-    step: *std.Build.Step,
-    dir: *std.Build.Step.InstallDir,
+    installation: *std.Build.Step.InstallDir,
+
+    pub fn create(
+        b: *std.Build,
+        pdx: *CompileBundlePseudoStep,
+        install_dir: std.Build.InstallDir,
+        dest_rel_path: []const u8,
+    ) *InstallBundlePseudoStep {
+        const asset_installation = b.addInstallDirectory(.{
+            .source_dir = pdx.asset_steps.generated_dir,
+            .install_dir = install_dir,
+            .install_subdir = dest_rel_path,
+            // pdc always creates a pdxinfo file if none is explicitly provided.
+            .exclude_extensions = &.{ "pdxinfo", "pdex.bin" },
+        });
+        const pdex_installation = b.addInstallDirectory(.{
+            .source_dir = pdx.pdex_steps.generated_dir,
+            .install_dir = install_dir,
+            .install_subdir = dest_rel_path,
+        });
+        pdex_installation.step.dependOn(&asset_installation.step);
+
+        const installed_pdx = b.allocator.create(InstallBundlePseudoStep) catch @panic("OOM");
+        installed_pdx.* = .{ .installation = pdex_installation };
+        return installed_pdx;
+    }
 };
 
 pub fn addRunSimulator(
     b: *std.Build,
     installed_pdx: *InstallBundlePseudoStep,
 ) *RunSimulatorPseudoStep {
-    const simulator_command = b.addSystemCommand(&.{sdkToolName(b, "PlaydateSimulator")});
-    simulator_command.addArg(b.getInstallPath(
-        installed_pdx.dir.options.install_dir,
-        installed_pdx.dir.options.install_subdir,
-    ));
-    simulator_command.step.dependOn(installed_pdx.step);
-
-    const run_simulator = b.allocator.create(RunSimulatorPseudoStep) catch @panic("OOM");
-    run_simulator.* = .{
-        .step = &simulator_command.step,
-        .simulator_command = simulator_command,
-    };
-    return run_simulator;
+    return RunSimulatorPseudoStep.create(b, installed_pdx);
 }
 
 pub const RunSimulatorPseudoStep = struct {
-    step: *std.Build.Step,
-    simulator_command: *std.Build.Step.Run,
-};
+    command: *std.Build.Step.Run,
 
-const simulator_cross_target = parse: {
-    @setEvalBranchQuota(10_000);
-    break :parse std.zig.CrossTarget.parse(.{
-        .arch_os_abi = "native",
-    }) catch unreachable;
-};
+    pub fn create(b: *std.Build, installed_pdx: *InstallBundlePseudoStep) *RunSimulatorPseudoStep {
+        const command = b.addSystemCommand(&.{sdkToolName(b, "PlaydateSimulator")});
+        command.addArg(b.getInstallPath(
+            installed_pdx.installation.options.install_dir,
+            installed_pdx.installation.options.install_subdir,
+        ));
+        command.step.dependOn(&installed_pdx.installation.step);
 
-const device_cross_target = parse: {
-    @setEvalBranchQuota(10_000);
-    break :parse std.zig.CrossTarget.parse(.{
-        .arch_os_abi = "thumb-freestanding-eabihf",
-        .cpu_features = "cortex_m7+fp_armv8d16sp" ++ "-fp_armv8d16-vfp4d16-vfp3d16-vfp2-fp64-fpregs64",
-    }) catch unreachable;
+        const run_simulator = b.allocator.create(RunSimulatorPseudoStep) catch @panic("OOM");
+        run_simulator.* = .{ .command = command };
+        return run_simulator;
+    }
 };
 
 fn thisDep(b: *std.Build) *std.Build.Dependency {
